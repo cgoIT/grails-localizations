@@ -70,8 +70,11 @@ set CMD_LINE_ARGS=%$
 @rem Setup the command line
 set JAR_PATH=%APP_HOME%/grails-wrapper.jar
 
+@rem Proxy opts
+IF EXIST proxy.conf FOR /F "delims=" %%A IN (proxy.conf) DO SET "%%A"
+
 @rem Execute Grails
-"%JAVA_EXE%" -jar %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRAILS_OPTS% %JAR_PATH% %CMD_LINE_ARGS%
+"%JAVA_EXE%" -jar %DEFAULT_JVM_OPTS% %PROXY_OPTS% %JAVA_OPTS% %GRAILS_OPTS% %JAR_PATH% %CMD_LINE_ARGS%
 
 :end
 @rem End local scope for the variables with windows NT shell

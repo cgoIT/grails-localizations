@@ -4,12 +4,17 @@ import grails.localizations.LocalizationsPluginUtils
 import grails.util.GrailsWebUtil
 import grails.util.Holders
 import grails.web.context.ServletContextHolder
+import groovy.util.logging.Slf4j
+import org.springframework.core.io.ClassPathResource
+import org.springframework.core.io.FileSystemResource
+import org.springframework.core.io.PathResource
 import org.springframework.core.io.Resource
+import org.springframework.core.io.UrlResource
 import org.springframework.web.context.request.RequestContextHolder
 import org.springframework.web.context.support.WebApplicationContextUtils
 import org.springframework.web.servlet.support.RequestContextUtils
 
-
+@Slf4j
 class Localization implements Serializable {
 
     private static cache = new LinkedHashMap((int) 16, (float) 0.75, (boolean) true)
@@ -24,8 +29,12 @@ class Localization implements Serializable {
     String locale
     Byte relevance = 0
     String text
+    String standardText
+    String source
+    boolean userEdited = false
     Date dateCreated
     Date lastUpdated
+    Date lastUserEdit
 
     static mapping = Holders.config.grails.plugin.localizations.mapping ?: {
         columns {
@@ -42,6 +51,9 @@ class Localization implements Serializable {
             return true
         })
         text(blank: true, size: 0..2000)
+        standardText nullable: true, blank: true, size: 0..2000
+        source nullable: true, blank: true, size: 0..500
+        lastUserEdit nullable: true
     }
 
     def localeAsObj() {
@@ -71,11 +83,13 @@ class Localization implements Serializable {
         }
 
         if (!msg) {
-            Localization.withNewSession {
-                def lst = Localization.findAll(
-                        "from org.grails.plugins.localization.Localization as x where x.code = ? and x.locale in ('*', ?, ?) order by x.relevance desc",
-                        [code, locale.getLanguage(), locale.getLanguage() + locale.getCountry()])
-                msg = lst.size() > 0 ? lst[0].text : missingValue
+            withNewSession {
+                withTransaction {
+                    def lst = findAll(
+                            "from org.grails.plugins.localization.Localization as x where x.code = :code and x.locale in ('*', :locale1, :locale2) order by x.relevance desc",
+                            [code: code, locale1: locale.getLanguage(), locale2: locale.getLanguage() + locale.getCountry()])
+                    msg = lst.size() > 0 ? lst[0].text : missingValue
+                }
             }
 
             if (maxCacheSize > 0) {
@@ -164,7 +178,7 @@ class Localization implements Serializable {
     }
 
     static setError(domain, parameters) {
-        def msg = Localization.getMessage(parameters)
+        def msg = getMessage(parameters)
         if (parameters.field) {
             domain.errors.rejectValue(parameters.field, null, msg)
         } else {
@@ -176,7 +190,7 @@ class Localization implements Serializable {
 
     // Repopulates the org.grails.plugins.localization table from the i18n property files
     static reload() {
-        Localization.executeUpdate("delete Localization")
+        executeUpdate("delete Localization")
         load()
         resetAll()
     }
@@ -197,19 +211,22 @@ class Localization implements Serializable {
         }
 
 
-        Localization.log.debug("Properties files for localization : " + propertiesResources*.filename)
+        log.debug("Properties files for localization: {}", propertiesResources*.filename.toListString())
 
         propertiesResources.each {
             def locale = getLocaleForFileName(it.filename)
-            Localization.loadPropertyFile(new InputStreamReader(it.inputStream, "UTF-8"), locale)
+            def counts = loadPropertyFile(new InputStreamReader(it.inputStream, "UTF-8"), locale, getAbsoluteFilename(it))
+            log.info "Synced Codes. Filename '${getAbsoluteFilename(it)}': ${counts.toMapString()}"
         }
+
         def size = Holders.config.localizations.cache.size.kb
         if (size != null && size instanceof Integer && size >= 0 && size <= 1024 * 1024) {
             maxCacheSize = size * 1024L
         }
     }
 
-    static loadPropertyFile(InputStreamReader inputStreamReader, locale) {
+    static loadPropertyFile(InputStreamReader inputStreamReader, locale, String filename) {
+        log.debug "Sync codes from ${filename}"
         def loc = locale ? locale.getLanguage() + locale.getCountry() : "*"
         def props = new Properties()
         def reader = new BufferedReader(inputStreamReader)
@@ -220,30 +237,94 @@ class Localization implements Serializable {
         }
 
         def rec, txt
-        def counts = [imported: 0, skipped: 0]
-        Localization.withSession { session ->
-            props.stringPropertyNames().each { key ->
-                rec = Localization.findByCodeAndLocale(key, loc)
-                if (!rec) {
+        def counts = [imported: 0, updated: 0, deleted: 0, skipped: 0]
+        withSession { session ->
+            withTransaction {
+                List<String> codes = []
+                props.stringPropertyNames().each { key ->
+                    codes << key
+                    rec = findWhere([code: key, locale: loc])
                     txt = props.getProperty(key)
-                    rec = new Localization([code: key, locale: loc, text: txt])
-                    if (rec.validate()) {
-                        rec.save()
-                        counts.imported++
+                    if (!rec) {
+                        rec = new Localization([code: key, locale: loc, text: txt, source: filename])
+                        if (saveLocalization(rec)) {
+                            log.debug "Imported new ${rec}"
+                            counts.imported++
+                        } else {
+                            log.warn "Could not import new ${rec}"
+                            counts.skipped++
+                        }
                     } else {
-                        counts.skipped++
+                        if (rec.userEdited && txt) {
+                            rec2 = findWhere([code: "${key}_updated", locale: loc])
+                            if (rec2) {
+                                rec2.text = txt
+                                rec2.source = filename
+                                if (saveLocalization(rec2)) {
+                                    log.debug "Updated user edited ${rec2}"
+                                    counts.updated++
+                                } else {
+                                    log.warn "Could not update user edited ${rec2}"
+                                    counts.skipped++
+                                }
+                            } else {
+                                rec = new Localization([code: "${key}_updated", locale: loc, text: txt, source: filename])
+                                if (saveLocalization(rec)) {
+                                    log.debug "Imported formerly user edited new ${rec}"
+                                    counts.imported++
+                                } else {
+                                    log.warn "Could not import formerly user edited new ${rec}"
+                                    counts.skipped++
+                                }
+                            }
+                        } else if (rec.text != txt && txt) {
+                            rec.text = txt
+                            rec.source = filename
+                            if (saveLocalization(rec)) {
+                                log.debug "Updated existing ${rec}"
+                                counts.updated++
+                            } else {
+                                log.warn "Could not update existing ${rec}"
+                                counts.skipped++
+                            }
+                        } else {
+                            log.debug "Skipped unchanged ${rec}"
+                            counts.skipped++
+                        }
                     }
-                } else {
-                    counts.skipped++
                 }
-            }
-            // Clear the whole cache if we actually imported any new keys
-            if (counts.imported > 0){
-                Localization.resetAll()
-                session.flush()
+
+                if (codes) {
+                    createCriteria().list {
+                        eq('source', filename)
+                        eq('locale', loc)
+                        eq('userEdited', false)
+                        not {
+                            inList('code', codes)
+                        }
+                    }.each { Localization localization ->
+                        println "delete ${localization}"
+                        localization.delete()
+                        counts.deleted++
+                    }
+                }
+
+                // Clear the whole cache if we actually imported any new keys
+                if (counts.imported + counts.updated + counts.deleted > 0){
+                    session.flush()
+                }
             }
         }
         return counts
+    }
+
+    private static boolean saveLocalization(Localization rec) {
+        if (rec.validate()) {
+            rec.save()
+            return true
+        }
+
+        false
     }
 
     static getLocaleForFileName(String fileName) {
@@ -297,9 +378,12 @@ class Localization implements Serializable {
 
     static Object search(params) {
         def expr = "%${params.q}%".toString().toLowerCase()
-        Localization.createCriteria().list(limit: params.max, order: params.order, sort: params.sort) {
+        createCriteria().list(limit: params.max, order: params.order, sort: params.sort) {
             if (params.locale) {
                 eq 'locale', params.locale
+            }
+            if (params.userEdited) {
+                eq 'userEdited', true
             }
             or {
                 ilike 'code', expr
@@ -309,11 +393,33 @@ class Localization implements Serializable {
     }
 
     static List<String> getUniqLocales() {
-        return Localization.createCriteria().list {
+        return createCriteria().list {
             projections {
                 distinct 'locale'
             }
         }.sort()
     }
 
+    static String getAbsoluteFilename(Resource resource) {
+        String name = resource.toString()
+        switch (resource.class) {
+            case UrlResource:
+                name = resource.url.toString()
+                break
+            case ClassPathResource:
+            case FileSystemResource:
+                name = resource.path
+                break
+            case PathResource:
+                name = resource.path.normalize().toFile().absolutePath
+                break
+
+        }
+
+        name
+    }
+
+    String toString() {
+        "Localization [code: ${code}, source: ${source}]"
+    }
 }

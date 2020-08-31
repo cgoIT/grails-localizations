@@ -8,7 +8,7 @@ import org.grails.plugins.localization.LocalizationMessageSource
 class GrailsLocalizationsGrailsPlugin extends Plugin {
 
     // the version or versions of Grails the plugin is designed for
-    def grailsVersion = "3.2.9 > *"
+    def grailsVersion = "3.3.10 > *"
     // resources that are excluded from plugin packaging
     def pluginExcludes = [
             "grails-app/views/error.gsp"
@@ -66,20 +66,22 @@ Asumptions:
 
     Closure doWithSpring() {
         { ->
-            if(Holders.config?.grails?.plugin?.localizations?.enabled){
+            if (Holders.config?.grails?.plugin?.localizations?.enabled) {
                 messageSource(LocalizationMessageSource)
             }
         }
     }
 
     void doWithDynamicMethods() {
-        grailsApplication.domainClasses.each { domainClass ->
-            domainClass.metaClass.message = { Map parameters -> Localization.getMessage(parameters) }
-            domainClass.metaClass.errorMessage = { Map parameters -> Localization.setError(delegate, parameters) }
-        }
+        if (Holders.config?.grails?.plugin?.localizations?.enabled) {
+            grailsApplication.domainClasses.each { domainClass ->
+                domainClass.metaClass.message = { Map parameters -> Localization.getMessage(parameters) }
+                domainClass.metaClass.errorMessage = { Map parameters -> Localization.setError(delegate, parameters) }
+            }
 
-        grailsApplication.serviceClasses.each { serviceClass ->
-            serviceClass.metaClass.message = { Map parameters -> Localization.getMessage(parameters) }
+            grailsApplication.serviceClasses.each { serviceClass ->
+                serviceClass.metaClass.message = { Map parameters -> Localization.getMessage(parameters) }
+            }
         }
     }
 

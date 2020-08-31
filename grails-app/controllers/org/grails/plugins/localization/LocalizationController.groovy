@@ -1,8 +1,10 @@
 package org.grails.plugins.localization
 
 import grails.converters.JSON
-import grails.transaction.Transactional
+import grails.gorm.transactions.Transactional
+import grails.localizations.LocalizationsPluginUtils
 import org.springframework.context.i18n.LocaleContextHolder
+import org.springframework.core.io.Resource
 
 class LocalizationController {
     // the delete, save and update actions only accept POST requests
@@ -17,7 +19,7 @@ class LocalizationController {
         // them in this list!
         message(code: "home", default: "Home")
 
-        def max = 50
+        def max = 100
         def dflt = 20
 
         // If the settings plugin is available, try and use it for pagination
@@ -33,7 +35,7 @@ class LocalizationController {
             dflt = setting.valueFor("pagination.default", dflt)
         }
 
-        params.max = (params.max && params.max.toInteger() > 0) ? Math.min(params.max.toInteger(), max) : dflt
+        params.max = (params.max && params.max.toInteger() > 0) ? Math.min(params.max as Integer, max) : dflt
         params.sort = params.sort ?: "code"
 
         def lst
@@ -51,7 +53,7 @@ class LocalizationController {
     }
 
     def search() {
-        params.max = (params.max && params.max.toInteger() > 0) ? Math.min(params.max.toInteger(), 50) : 20
+        params.max = (params.max && params.max.toInteger() > 0) ? Math.min(params.max as Integer, 100) : 20
         params.order = params.order ? params.order : (params.sort ? 'desc' : 'asc')
         params.sort = params.sort ?: "code"
         def lst = Localization.search(params)
@@ -68,14 +70,16 @@ class LocalizationController {
         }
     }
 
+    def deletePrepare() {
+        render(template: 'deleteDialogBody', model: [id: params.id])
+    }
+
     @Transactional
     def delete() {
         withLocalization { localization ->
             localization.delete()
             Localization.resetThis(localization.code)
-            flash.message = "localization.deleted"
-            flash.args = [params.id]
-            flash.defaultMessage = "Localization ${params.id} deleted"
+            flash.message = g.message(code: "localization.deleted", args: [params.id], default: "Localization ${params.id} deleted")
             redirect(action: 'index')
         }
     }
@@ -91,21 +95,23 @@ class LocalizationController {
         def localization = Localization.get(params.id)
         if (localization) {
             def oldCode = localization.code
+            String oldText = localization.userEdited ? null : localization.text
             localization.properties = params
+            if (oldText) {
+                localization.standardText = oldText
+            }
+            localization.userEdited = true
+            localization.lastUserEdit = new Date()
             if (!localization.hasErrors() && localization.save()) {
                 Localization.resetThis(oldCode)
                 if (localization.code != oldCode) Localization.resetThis(localization.code)
-                flash.message = "localization.updated"
-                flash.args = [params.id]
-                flash.defaultMessage = "Localization ${params.id} updated"
+                flash.message = g.message(code: "localization.updated", args: [params.id.toString()], default: "Localization ${params.id} updated")
                 redirect(action: 'show', id: localization.id)
             } else {
                 render(view: 'edit', model: [localization: localization])
             }
         } else {
-            flash.message = "localization.not.found"
-            flash.args = [params.id]
-            flash.defaultMessage = "Localization not found with id ${params.id}"
+            flash.message = g.message(code: "localization.not.found", args: [params.id.toString()], default: "Localization not found with id ${params.id}")
             redirect(action: 'edit', id: params.id)
         }
     }
@@ -119,11 +125,11 @@ class LocalizationController {
     @Transactional
     def save() {
         def localization = new Localization(params)
+        localization.userEdited = true
+        localization.lastUserEdit = new Date()
         if (!localization.hasErrors() && localization.save()) {
             Localization.resetThis(localization.code)
-            flash.message = "localization.created"
-            flash.args = ["${localization.id}"]
-            flash.defaultMessage = "Localization ${localization.id} created"
+            flash.message = g.message(code: "localization.created", args: ["${localization.id}"], default: "Localization ${localization.id} created")
             redirect(action: 'show', id: localization.id)
         } else {
             render(view: 'create', model: [localization: localization])
@@ -139,6 +145,31 @@ class LocalizationController {
         redirect(action: 'cache')
     }
 
+    def resetToDefaultPrepare() {
+        render(template: 'resetToDefaultDialogBody', model: [id: params.id])
+    }
+
+    @Transactional
+    def resetToDefault() {
+        Localization localization = Localization.get(params.id)
+        if (localization && localization.userEdited && localization.standardText && localization.source) {
+            localization.text = localization.standardText
+            localization.standardText = null
+            localization.userEdited = false
+            localization.lastUserEdit = null
+            if (!localization.hasErrors() && localization.save()) {
+                Localization.resetThis(localization.code)
+                flash.message = g.message(code: "localization.resetted", args: ["${localization.id}"], default: "Localization ${localization.id} resetted")
+                redirect(Localization.get(params.id))
+            } else {
+                render(view: 'edit', model: [localization: localization])
+            }
+        } else {
+            flash.message = g.message(code: 'localization.not.resettable')
+            redirect(Localization.get(params.id))
+        }
+    }
+
     def imports() {
         // The following line has the effect of checking whether this plugin
         // has just been installed and, if so, gets the plugin to load all
@@ -146,60 +177,52 @@ class LocalizationController {
         // the property files here.
         message(code: "home", default: "Home")
 
-        def names = []
-        def path = servletContext.getRealPath("/")
-        if (path) {
-            def dir = new File(new File(path).getParent(), "grails-app${File.separator}i18n")
-            if (dir.exists() && dir.canRead()) {
-                def name
-                dir.listFiles().each {
-                    if (it.isFile() && it.canRead() && it.getName().endsWith(".properties")) {
-                        name = it.getName()
-                        names << name.substring(0, name.length() - 11)
-                    }
-                }
-                names.sort()
-            }
+        def names = [:]
+        List<Resource> propertiesResources = []
+        LocalizationsPluginUtils.i18nResources?.each {
+            propertiesResources << it
+        }
+        LocalizationsPluginUtils.allPluginI18nResources?.each {
+            propertiesResources << it
+        }
+        propertiesResources.each {
+            names.put(Localization.getAbsoluteFilename(it), it.filename)
         }
 
-        return [names: names]
+        names = names.sort {n1, n2 -> n1.value <=> n2.value }
+        return ['names': names]
     }
 
-    @Transactional
+    def reload() {
+        Localization.syncWithPropertyFiles()
+        redirect(action: "index")
+    }
+
     def load() {
         def name = params.file
         if (name) {
-            name += ".properties"
-            def path = servletContext.getRealPath("/")
-            if (path) {
-                def dir = new File(new File(path).getParent(), "grails-app${File.separator}i18n")
-                if (dir.exists() && dir.canRead()) {
-                    def file = new File(dir, name)
-                    if (file.isFile() && file.canRead()) {
-                        def locale = Localization.getLocaleForFileName(name)
+            Map<String, Map> names = [:]
+            List<Resource> propertiesResources = []
+            LocalizationsPluginUtils.i18nResources?.each {
+                propertiesResources << it
+            }
+            LocalizationsPluginUtils.allPluginI18nResources?.each {
+                propertiesResources << it
+            }
+            propertiesResources.each {
+                names.put(Localization.getAbsoluteFilename(it), [stream: new InputStreamReader(it.inputStream, "UTF-8"), filename: it.filename])
+            }
 
-                        def counts = Localization.loadPropertyFile(new InputStreamReader(new FileInputStream(file), "UTF-8"), locale)
-                        flash.message = "localization.imports.counts"
-                        flash.args = [counts.imported, counts.skipped]
-                        flash.defaultMessage = "Imported ${counts.imported} key(s). Skipped ${counts.skipped} key(s)."
-                    } else {
-                        flash.message = "localization.imports.access"
-                        flash.args = [file]
-                        flash.defaultMessage = "Unable to access ${file}"
-                    }
-                } else {
-                    flash.message = "localization.imports.access"
-                    flash.args = [dir]
-                    flash.defaultMessage = "Unable to access ${dir}"
-                }
+            Map found = names.get(name)
+            if (found) {
+                def locale = Localization.getLocaleForFileName(found.filename)
+                def counts = Localization.loadPropertyFile(found.stream, locale, name)
+                flash.message = g.message(code: "localization.imports.counts", args: [counts.imported, counts.updated, counts.deleted, counts.skipped], default: "Files processed. Imported ${counts.imported}, updated ${counts.updated}, skipped ${counts.skipped}")
             } else {
-                flash.message = "localization.imports.access"
-                flash.args = ["/"]
-                flash.defaultMessage = "Unable to access /"
+                flash.message = g.message(code: "localization.imports.access", args: [file], default: "Unable to access ${file}")
             }
         } else {
-            flash.message = "localization.imports.missing"
-            flash.defaultMessage = "No properties file selected"
+            flash.message = g.message(code: "localization.imports.missing", default: "No properties file selected")
         }
 
         redirect(action: "imports")
@@ -233,11 +256,20 @@ class LocalizationController {
         if (localization) {
             c.call localization
         } else {
-            flash.message = "localization.not.found"
-            flash.args = [params.id]
-            flash.defaultMessage = "Localization not found with id ${params.id}"
+            flash.message = g.message(code: "localization.not.found", args: [params.id], default: "Localization not found with id ${params.id}")
             redirect(action: 'index')
         }
     }
 
+    private static readPropertyFiles(File dir) {
+        def names = []
+        def name
+        dir.listFiles().each {
+            if (it.isFile() && it.canRead() && it.getName().endsWith(".properties")) {
+                name = it.getName()
+                names << name.substring(0, name.length() - 11)
+            }
+        }
+        names.sort(true)
+    }
 }

@@ -5,7 +5,7 @@ buildscript {
     }
     dependencies {
         classpath "org.grails:grails-gradle-plugin:$grailsVersion"
-        classpath "com.bertramlabs.plugins:asset-pipeline-gradle:2.8.2"
+        classpath "com.bertramlabs.plugins:asset-pipeline-gradle:3.0.10"
     }
 }
 
@@ -36,7 +36,7 @@ dependencies {
     profile "org.grails.profiles:web-plugin"
     provided "org.grails:grails-plugin-services"
     provided "org.grails:grails-plugin-domain-class"
-    runtime "com.bertramlabs.plugins:asset-pipeline-grails:2.8.2"
+    runtime "com.bertramlabs.plugins:asset-pipeline-grails:3.0.10"
 }
 
 bootRun {
@@ -46,7 +46,7 @@ bootRun {
 // enable if you wish to package this plugin as a standalone application
 bootRepackage.enabled = false
 grailsPublish {
-    githubSlug = 'halfbaked/grails-localizations'
+    githubSlug = 'cgoIT/grails-localizations'
     license {
         name = 'Apache-2.0'
     }
@@ -67,14 +67,20 @@ Asumptions:
 * Your database supports unicode
 * Your application has a layout called main
 '''
-    developers = [sachinverma: "Sachin Verma", halfbaked: "Eamonn O'Connell"]
+    developers = [sachinverma: "Sachin Verma", halfbaked: "Eamonn O'Connell", cgoit: "Carsten Götzinger"]
 }
 
 bintray {
+    publications = ['maven']
+
+    publish = true
+
     pkg {
+        repo = 'maven'
         name = "$project.name"
-        issueTrackerUrl = "https://github.com/halfbaked/$project.name/issues"
-        vcsUrl = "https://github.com/halfbaked/$project.name"
+        websiteUrl = "https://github.com/cgoIT/$project.name"
+        issueTrackerUrl = "https://github.com/cgoIT/$project.name/issues"
+        vcsUrl = "https://github.com/cgoIT/${project.name}.git"
         version {
             attributes = ['grails-plugin': "$project.group:$project.name"]
             name = project.version
@@ -86,3 +92,5 @@ bintray {
 assets {
     packagePlugin = true
 }
+
+bintrayUpload.dependsOn = [sourcesJar]
