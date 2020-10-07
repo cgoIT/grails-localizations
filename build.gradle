@@ -9,7 +9,7 @@ buildscript {
     }
 }
 
-version "0.1.3"
+version "0.1.3.2-patched"
 group "org.grails.plugins"
 
 apply plugin: "eclipse"
@@ -30,6 +30,7 @@ dependencies {
     compile "org.grails:grails-core"
     compile "org.springframework.boot:spring-boot-starter-actuator"
     compile "org.springframework.boot:spring-boot-starter-tomcat"
+    compile "org.springframework:spring-test"
     compile "org.grails:grails-dependencies"
     compile "org.grails:grails-web-boot"
     compile "org.grails.plugins:cache"

@@ -1,7 +1,6 @@
 package org.grails.plugins.localization
 
 import grails.localizations.LocalizationsPluginUtils
-import grails.util.GrailsWebUtil
 import grails.util.Holders
 import grails.web.context.ServletContextHolder
 import groovy.util.logging.Slf4j
@@ -17,7 +16,7 @@ import org.springframework.web.servlet.support.RequestContextUtils
 @Slf4j
 class Localization implements Serializable {
 
-    private static cache = new LinkedHashMap((int) 16, (float) 0.75, (boolean) true)
+    private static final cache = new LinkedHashMap((int) 16, (float) 0.75, (boolean) true)
     private static long maxCacheSize = 128L * 1024L // Cache size in KB (default is 128kb)
     private static long currentCacheSize = 0L
     private static final missingValue = "\b" // an impossible value signifying that no such code exists in the database
@@ -124,16 +123,9 @@ class Localization implements Serializable {
     static getMessage(parameters) {
         def requestAttributes = RequestContextHolder.getRequestAttributes()
         def applicationContext = WebApplicationContextUtils.getRequiredWebApplicationContext(ServletContextHolder.getServletContext())
-        boolean unbindRequest = false
-
-        // Outside of an executing request, establish a mock version
-        if (!requestAttributes) {
-            requestAttributes = GrailsWebUtil.bindMockWebRequest(applicationContext)
-            unbindRequest = true
-        }
 
         def messageSource = applicationContext.getBean("messageSource")
-        def locale = RequestContextUtils.getLocale(requestAttributes.request)
+        def locale = requestAttributes ? RequestContextUtils.getLocale(requestAttributes.request) : Locale.getDefault()
 
         // What the heck is going on here with RequestContextUtils.getLocale() returning a String?
         // Beats the hell out of me, so just fix it!
@@ -149,7 +141,6 @@ class Localization implements Serializable {
 
         def msg = messageSource.getMessage(parameters.code, parameters.args as Object[], parameters.default, locale)
 
-        if (unbindRequest) RequestContextHolder.setRequestAttributes(null)
         if (parameters.encodeAs) {
             switch (parameters.encodeAs.toLowerCase()) {
                 case 'html':
@@ -236,7 +227,7 @@ class Localization implements Serializable {
             if (reader) reader.close()
         }
 
-        def rec, txt
+        def rec, txt, rec2
         def counts = [imported: 0, updated: 0, deleted: 0, skipped: 0]
         withSession { session ->
             withTransaction {
