@@ -15,13 +15,20 @@ group "org.grails.plugins"
 apply plugin: "eclipse"
 apply plugin: "idea"
 apply plugin: "org.grails.grails-plugin"
-apply plugin: "org.grails.grails-plugin-publish"
+apply plugin:"org.grails.grails-plugin-publish"
 apply plugin: "org.grails.grails-gsp"
 apply plugin: "asset-pipeline"
+apply plugin: "maven-publish"
 
 repositories {
     mavenLocal()
     maven { url "https://repo.grails.org/grails/core" }
+}
+
+ext {
+    nexusBase = "https://nexus.cgo-it.de/repository"
+    nexusUsername = System.getenv("NEXUS_USER") ?: rootProject.cgoitNexusUsername
+    nexusPassword = System.getenv("NEXUS_PASSWORD") ?: rootProject.cgoitNexusPassword
 }
 
 dependencies {
@@ -46,6 +53,49 @@ bootRun {
 }
 // enable if you wish to package this plugin as a standalone application
 bootRepackage.enabled = false
+
+publishing.repositories {
+    maven {
+        credentials {
+            username "${nexusUsername}"
+            password "${nexusPassword}"
+        }
+
+        def releasesRepoUrl = "$nexusBase/grails-plugins"
+        def snapshotsRepoUrl = "$nexusBase/grails-plugins-snapshots"
+        url = "SNAPSHOT" in project.version ? snapshotsRepoUrl : releasesRepoUrl
+    }
+}
+
+publishing.publications {
+    localizations(MavenPublication) {
+        afterEvaluate {
+            artifactId = project.name
+            version project.version
+            from components.java
+            artifact sourcesJar
+            pom {
+                description = '''This plugin will pull i18n definitions from the database rather than from the standard properties files in the i18n folder for Grails 3 applications.
+
+It will do the following:
+* Create a domain class and corresponding table called Localization
+* Prepopulate the table with all the message properties it finds in the i18n folder
+* Ensure Grails writes i18n messages based on what it finds in the database rather than the 118n folder
+
+In addtion the plugin also has these added features to help you:
+* A CRUD UI to add, delete, and update i18n messages
+* A cache for increased speed 
+* A JSONP action which can be useful in client-side templating.
+
+Asumptions:
+* Your database supports unicode
+* Your application has a layout called main
+'''
+            }
+        }
+    }
+}
+
 grailsPublish {
     githubSlug = 'cgoIT/grails-localizations'
     license {
@@ -71,27 +121,8 @@ Asumptions:
     developers = [sachinverma: "Sachin Verma", halfbaked: "Eamonn O'Connell", cgoit: "Carsten Götzinger"]
 }
 
-bintray {
-    publications = ['maven']
-
-    publish = true
-
-    pkg {
-        repo = 'maven'
-        name = "$project.name"
-        websiteUrl = "https://github.com/cgoIT/$project.name"
-        issueTrackerUrl = "https://github.com/cgoIT/$project.name/issues"
-        vcsUrl = "https://github.com/cgoIT/${project.name}.git"
-        version {
-            attributes = ['grails-plugin': "$project.group:$project.name"]
-            name = project.version
-        }
-    }
-}
-
+publish.dependsOn = [sourcesJar, build]
 
 assets {
     packagePlugin = true
 }
-
-bintrayUpload.dependsOn = [sourcesJar]
